@@ -9,6 +9,7 @@ MPCNC posts processor for milling and laser/plasma cutting.
 
 // user-defined properties
 properties = {
+	jobLCDComment: "",
   jobTravelSpeedXY: 2500,              // High speed for travel movements X & Y (mm/min)
   jobTravelSpeedZ: 300,                // High speed for travel movements Z (mm/min)
 
@@ -17,6 +18,7 @@ properties = {
   jobUseArcs: true,                    // Produce G2/G3 for arcs
 
   jobSetOriginOnStart: true,           // Set origin when gcode start (G92)
+  jobHomeXYOnStart: true,              // Home XY at start (ignores initial position)
   jobGoOriginOnFinish: true,           // Go X0 Y0 Z0 at gcode end
 
   jobSequenceNumbers: false,           // show sequence numbers
@@ -25,6 +27,7 @@ properties = {
   jobSeparateWordsWithSpace: true,     // specifies that the words should be separated with a white space  
 
   toolChangeEnabled: true,          // Enable tool change code (bultin tool change requires LCD display)
+  toolChangeUseProbePosition: true, // Use probe XY coordinates for tool change
   toolChangeX: 0,                   // X position for builtin tool change
   toolChangeY: 0,                   // Y position for builtin tool change
   toolChangeZ: 40,                  // Z position for builtin tool change
@@ -36,6 +39,9 @@ properties = {
   probeUseHomeZ: true,              // use G28 or G38 for probing 
   probeG38Target: -10,              // probing up to pos 
   probeG38Speed: 30,                // probing with speed 
+  probeUseCustomPosition: true,     // use XY position for probe
+  probeX: 10,                       // travels to this X to probe
+  probeY: 10,                       // travels to this Y to probe
 
   gcodeStartFile: "",               // File with custom Gcode for header/start (in nc folder)
   gcodeStopFile: "",                // File with custom Gcode for footer/end (in nc folder)
@@ -67,6 +73,10 @@ propertyDefinitions = {
     ]
   },
 
+  jobLCDComment: {
+    title: "Job: LCD Start comment", description: "Comment shown on LCD at start", group: 1, type: "string",
+    default_mm: "Start...", default_in: "Start..."
+  },
   jobTravelSpeedXY: {
     title: "Job: Travel speed X/Y", description: "High speed for travel movements X & Y (mm/min; in/min)", group: 1,
     type: "spatial", default_mm: 2500, default_in: 100
@@ -92,6 +102,10 @@ propertyDefinitions = {
 
   jobSetOriginOnStart: {
     title: "Job: Reset on start (G92)", description: "Set origin when gcode start (G92)", group: 1,
+    type: "boolean", default_mm: true, default_in: true
+  },
+  jobHomeXYOnStart: {
+    title: "Job: Home XY on start", description: "Home XY at start (ignores initial position)", group: 1,
     type: "boolean", default_mm: true, default_in: true
   },
   jobGoOriginOnFinish: {
@@ -126,6 +140,10 @@ propertyDefinitions = {
 
   toolChangeEnabled: {
     title: "Change: Enabled", description: "Enable tool change code (bultin tool change requires LCD display)", group: 2,
+    type: "boolean", default_mm: true, default_in: true
+  },
+  toolChangeUseProbePosition: {
+    title: "Change: Use probe position", description: "Use probe XY coordinates for tool change", group: 2,
     type: "boolean", default_mm: true, default_in: true
   },
   toolChangeX: {
@@ -168,6 +186,18 @@ propertyDefinitions = {
   probeG38Speed: {
     title: "Probe: G38 speed", description: "Probing with speed (mm/min; in/min)", group: 3,
     type: "spatial", default_mm: 30, default_in: 1.2
+  },
+  probeUseCustomPosition: {
+    title: "Probe: Use custom position", description: "Use custom XY position for probe", group: 3,
+    type: "boolean", default_mm: true, default_in: true
+  },
+  probeX: {
+    title: "Probe: X", description: "X position for probe", group: 3,
+    type: "spatial", default_mm: 10, default_in: 0.5
+  },
+  probeY: {
+    title: "Probe: Y", description: "Y position for probe", group: 3,
+    type: "spatial", default_mm: 10, default_in: 0.5
   },
 
   cutterOnVaporize: {
@@ -902,11 +932,15 @@ Firmware3dPrinterLike.prototype.init = function () {
   }
 }
 Firmware3dPrinterLike.prototype.start = function () {
+	this.askUser(properties.jobLCDComment, false);
   writeBlock(gAbsIncModal.format(90)); // Set to Absolute Positioning
   writeBlock(gUnitModal.format(unit == IN ? 20 : 21));
   writeBlock(mFormat.format(84), sFormat.format(0)); // Disable steppers timeout
+  if (properties.jobHomeXYOnStart) {
+    writeBlock(gFormat.format(28), 'X', 'Y'); // Home XY on start
+  }
   if (properties.jobSetOriginOnStart) {
-    writeBlock(gFormat.format(92), xFormat.format(0), yFormat.format(0), zFormat.format(0)); // Set origin to initial position
+	 writeBlock(gFormat.format(92), xFormat.format(0), yFormat.format(0), zFormat.format(0)); // Set origin to initial position
   }
   if (properties.probeOnStart && tool.number != 0 && !tool.jetTool) {
     onCommand(COMMAND_TOOL_MEASURE);
@@ -1020,7 +1054,14 @@ Firmware3dPrinterLike.prototype.askUser = function (text, title, allowJog) {
 Firmware3dPrinterLike.prototype.toolChange = function () {
   this.flushMotions();
   // Go to tool change position
-  onRapid(propertyMmToUnit(properties.toolChangeX), propertyMmToUnit(properties.toolChangeY), propertyMmToUnit(properties.toolChangeZ));
+  if (properties.toolChangeUseProbePosition)
+  {
+	onRapid(propertyMmToUnit(properties.probeX), propertyMmToUnit(properties.probeY), propertyMmToUnit(properties.toolChangeZ));
+  }
+  else
+  {
+	onRapid(propertyMmToUnit(properties.toolChangeX), propertyMmToUnit(properties.toolChangeY), propertyMmToUnit(properties.toolChangeZ));
+  }
   currentFirmware.flushMotions();
   // turn off spindle and coolant
   onCommand(COMMAND_COOLANT_OFF);
@@ -1044,6 +1085,10 @@ Firmware3dPrinterLike.prototype.toolChange = function () {
   }
 }
 Firmware3dPrinterLike.prototype.probeTool = function () {
+  if (properties.probeUseCustomPosition)
+  {
+	  onRapid(propertyMmToUnit(properties.probeX), propertyMmToUnit(properties.probeY), propertyMmToUnit(properties.toolChangeZ));
+  }
   this.askUser("Attach ZProbe", "Probe", false);
   // refer http://marlinfw.org/docs/gcode/G038.html
   if (properties.probeUseHomeZ) {
